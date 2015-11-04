@@ -1,0 +1,28 @@
+#!/bin/bash
+## purpose: Clean stale connection in pgsql database
+## copyright: B1 Systems GmbH <info@b1-systems.de>, 2014.
+## license: GPLv3+, http://www.gnu.org/licenses/gpl-3.0.html
+## author: Mattias Giese <giese@b1-systems.de>, 2014.
+## version: 0.1: minimal functionality, 20141222
+
+set -e
+set -u
+
+sqltmp=$(mktemp /tmp/b1pgsql-clean.XXXX)
+
+idle_time=${1:-20}
+
+cat <<EOF >$sqltmp
+SELECT
+   pg_terminate_backend(procpid)
+FROM
+   pg_stat_activity
+WHERE
+   current_query = '<IDLE>'
+AND
+   now() - query_start > '00:${idle_time}:00';
+EOF
+
+spacewalk-sql --select-mode $sqltmp &>/dev/null
+
+rm $sqltmp

@@ -1,0 +1,1 @@
+0 */2 * * * root /usr/bin/b1-pgsql-connection-cleaner
