@@ -1,0 +1,4 @@
+basedir: /var/spacewalk
+apiurl: https://localhost/rpc/api
+apiuser: apiuser
+apipassword: apiuser

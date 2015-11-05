@@ -1,0 +1,86 @@
+#!/usr/bin/python
+## purpose: Check if certain custom system variables are set on a system
+## copyright: B1 Systems GmbH <info@b1-systems.de>, 2014.
+## license: GPLv3+, http://www.gnu.org/licenses/gpl-3.0.html
+## author: Mattias Giese <giese@b1-systems.de>, 2014.
+## version: 0.1: first prototype with minimal functionality
+
+import argparse
+import os
+import sys
+import datetime
+import re
+import xmlrpclib
+
+global USER, PASS, URL
+
+USER=''
+PASS=''
+URL='http://localhost/rpc/api'
+
+EXIT={}
+EXIT['unknown']=3
+EXIT['critical']=2
+EXIT['warning']=1
+EXIT['ok']=0
+
+def swconnect():
+        return xmlrpclib.Server(URL, verbose=0)
+
+def swgetkey(client):
+        return client.auth.login(USER, PASS)
+
+def swlogout(client,key):
+        try:
+                client.auth.logout(key)
+        except Exception, e:
+                print "Logout failed:", e
+                sys.exit(1)
+
+parser = argparse.ArgumentParser(description="Check to see if certain custom system vars are set for a system", epilog="written by Mattias Giese <giese@b1-systems.de> / (C) B1 Systems GmbH <info@b1-systems.de>, 2013")
+parser.add_argument("--var", help="The custom var to check. May be issued several times", action='append', dest='systemvars')
+parser.add_argument("--warn", help="Issue warning when more than X custom vars are not set", type=int, default=1)
+parser.add_argument("--critical", help="Return critical status when more than X custom vars are not set", type=int, default=2)
+parser.add_argument("profilename", help="The systemprofile to check (should be hostname)")
+
+global args
+args = parser.parse_args()
+
+
+client = swconnect()
+
+key=swgetkey(client)
+
+try:
+	sysid=client.system.getId(key,args.profilename)[0]['id']
+except:
+	print 'UNKOWN: Could not get System-ID for',args.profilename
+	sys.exit(EXIT['unknown'])
+
+failcount=0
+missing_systemvars=[]
+try:
+	defined_vars=client.system.getCustomValues(key,sysid)
+except Exception, e:
+	print 'Could not fetch configured system vars for',args.profilename
+	sys.exit(EXIT['unknown'])
+
+#print defined_vars
+#print args.systemvars
+for systemvar in args.systemvars:
+	if not defined_vars.has_key(systemvar):
+		#print 'Oh noes!',systemvar,'is not defined'	
+		failcount+=1
+		missing_systemvars.append(systemvar)
+
+swlogout(client,key)
+
+if failcount==0:
+	print 'OK: All defined custom vars(',args.systemvars,') are set'
+	sys.exit(EXIT['ok'])
+if failcount >= args.warn and failcount < args.critical:
+	print 'WARNING:',failcount,'variables are not set:',missing_systemvars
+	sys.exit(EXIT['warning'])
+if failcount >= args.critical:
+	print 'CRITICAL:',failcount,'variables are not set:',missing_systemvars
+	sys.exit(EXIT['critical'])

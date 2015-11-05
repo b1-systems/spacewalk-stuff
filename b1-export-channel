@@ -1,0 +1,175 @@
+#!/usr/bin/env python
+## purpose: Hardlink all packages from a channel to a target dir. 
+## copyright: B1 Systems GmbH <info@b1-systems.de>, 2014.
+## license: GPLv3+, http://www.gnu.org/licenses/gpl-3.0.html
+## author: Mattias Giese <giese@b1-systems.de>, 2014.
+## version: 0.1: first prototype with minimal functionality
+## version: 0.2: more configurability
+
+import argparse
+import os
+import sys
+import xmlrpclib
+import subprocess
+import yaml
+import textwrap
+import getpass
+
+def swconnect(apiurl):
+  return xmlrpclib.Server(apiurl, verbose=0)
+
+def swgetkey(client, apiuser, apipassword):
+  return client.auth.login(apiuser, apipassword)
+
+def swlogout(client,key):
+  client.auth.logout(key)
+
+def export_channel(channel):
+  export_target=args.targetdir
+  if args.create_channel_dirs:
+    export_target=export_target+'/'+channel
+  if not os.path.exists(export_target):
+    if not args.quiet:
+      print 'Export target',export_target,'does not exists. Creating it now'
+    if not args.noop:
+      try:
+        os.makedirs(export_target)
+      except OSError, e:
+        print 'Error creating directory, exiting.',e
+        sys.exit(1)
+  pkg_count=0
+  try:
+    print 'Reading packages...'
+    packages=client.channel.software.listLatestPackages(key,channel)
+  except Exception, e:
+    print 'Failed to read packages:', e
+    sys.exit(1)
+  for package in packages:
+    pkg_path=client.packages.getDetails(key,package['id'])['path']
+    target=args.basedir + '/' + pkg_path	
+    pkg=os.path.basename(target)
+    target_link=export_target + '/' + pkg
+    if args.noop:
+      print 'ln', target, target_link
+    else:
+      try:
+        if not os.path.exists(target_link):
+          if args.symlinks:
+            os.symlink(target,target_link)
+          else:
+            subprocess.call(['/bin/ln',target,target_link])	
+          if not args.quiet:
+            print 'Processed package',pkg 
+        else:
+          if not args.quiet:
+            print 'Skipping',pkg,'because it already exists in',export_target
+        pkg_count+=1
+      except Exception, e:
+        print 'Linking',target_link,'to',target,'failed! Exception:',e
+        if args.bail:
+          sys.exit(1)
+  if not args.quiet:
+    print 'Successfully exported %i packages from channel %s' % (pkg_count,channel)
+  if args.createrepo:
+    if args.noop:
+      print 'I would call createrepo for channel %s now' % (channel,)
+    else:
+      if not args.quiet:
+        print 'Creating metadata for channel %s now...' % (channel,)
+      try:
+        subprocess.call(['/usr/bin/createrepo',export_target])
+      except Exception, e:
+        print 'Creating metadata for channel %s failed. Error: %s' % (channel,e)
+        if args.bail:
+          sys.exit(1)
+
+parser = argparse.ArgumentParser(\
+  description="Link package files from a spacewalk channel to a specific directory", \
+  formatter_class=argparse.RawDescriptionHelpFormatter, \
+  epilog=textwrap.dedent('''\
+written by Mattias Giese <giese@b1-systems.de>
+(C) B1 Systems GmbH <info@b1-systems.de>, 2014'''))
+parser.add_argument("--config", \
+  help="The configuration file to use.", type=str, default='/etc/b1-export-channel.yml')
+parser.add_argument("--channel", "-c", \
+  help="The channel to export, may be used several times", action='append', dest='channels')
+parser.add_argument("--noop", help="Do not do anything.", action='store_true')
+parser.add_argument("--create-channel-dirs", "-k", \
+  help="Should i create a directory for the channel inside the destination dir?", \
+  action='store_true')
+parser.add_argument("--basedir", "-b", \
+  help="The base directory where spacewalk stores its packages", \
+  type=str, default='/var/spacewalk')
+parser.add_argument("--url", help="The api url to connect to", dest='apiurl')
+parser.add_argument("--user", "-u", \
+  help="The user who should authenticate against the API", dest='apiuser')
+parser.add_argument("--pass", "-p", \
+  help="The password to use", dest='apipassword')
+parser.add_argument("--createrepo", "-r", \
+  help="Should i create repository metadata for the exported channel(s)?", \
+  action='store_true')
+parser.add_argument("--traverse", "-t", \
+  help="The provided channel label(s) are basechannels and i should traverse the tree", \
+  action='store_true')
+parser.add_argument("--symlinks", "-s", \
+  help="Create symlinks instead of hardlinks", \
+  action='store_true')
+parser.add_argument("--quiet", "-q", help="Print only warnings/errors", action='store_true')
+parser.add_argument("--bail", help="Bail out as soon as an action fails", action='store_true')
+parser.add_argument("targetdir", \
+  help="The destination directory for the package links. Will be created if it does not exist.", \
+  type=str)
+        
+global args
+args = parser.parse_args()
+
+
+# read the config if any neccessary parameters are not set
+if args.apiuser is None or args.apipassword is None or args.apiurl is None or args.basedir is None:
+  try:
+    config = yaml.load(open(args.config))
+    if args.apiurl is None:
+      args.apiurl = config.get('apiurl', None)
+    if args.apiuser is None:
+      args.apiuser = config.get('apiuser', None)
+    if args.apipassword is None:
+      args.apipassword = config.get('apipassword', None)
+    if args.basedir is None:
+      args.basedir = config.get('basedir', None)
+  except Exception, e:
+    print "Not all neccessary parameters given"
+    print "and I could not read config file: %s.\nException: %s" % (args.config, e)
+    sys.exit(1) 
+
+# ask for user/password interactively
+if args.apiuser is None:
+  sys.stdout.write('Spacewalk user: ')
+  args.apiuser=sys.stdin.readline()
+if args.apipassword is None:
+  args.apipassword=getpass.getpass('Spacewalk password: ')
+
+global client
+global key
+try:
+  client = swconnect(args.apiurl)
+  key = swgetkey(client,args.apiuser,args.apipassword)
+except Exception, e:
+  print 'Could not connect to spacewalk instance, bailing out.'
+  print 'Error:', e
+  sys.exit(1)
+
+print 'Satellite base:',args.basedir
+print 'Export target:', args.targetdir
+
+for channel in args.channels:
+  export_channel(channel)
+  if args.traverse:
+    try:
+      for child in client.channel.software.listChildren(key,channel):
+        export_channel(child['label'])
+    except Exception, e:
+      print '%s has no childchannels or api call failed. Error: %s' % (channel,e)
+      if args.bail:
+        sys.exit(1)
+
+swlogout(client,key)
